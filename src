@@ -1,0 +1,826 @@
+report ZBDC_CHNG_WRKCNTR
+       no standard page heading line-size 255.
+
+* Include bdcrecx1_s:
+* The call transaction using is called WITH AUTHORITY-CHECK!
+* If you have own auth.-checks you can use include bdcrecx1 instead.
+*include bdcrecx1_s.
+
+
+TYPES: BEGIN OF ty_excel,
+
+         plant TYPE char10,         " wewrks
+         work_center TYPE char20,   " Work Center  arbpl
+
+         rule01 TYPE char10,
+         rule02 TYPE char10,
+         rule03 TYPE char10,
+         rule04 TYPE char10,
+         rule05 TYPE char10,
+
+         act_typ01 TYPE char10,
+         act_typ02 TYPE char10,
+         act_typ03 TYPE char10,
+         act_typ04 TYPE char10,
+         act_typ05 TYPE char10,
+
+         act_unt01 TYPE char10,
+          act_unt02 TYPE char10,
+          act_unt03 TYPE char10,
+          act_unt04 TYPE char10,
+          act_unt05 TYPE char10,
+
+         for_key01 TYPE char10,
+         for_key02 TYPE char10,
+         for_key03 TYPE char10,
+         for_key04 TYPE char10,
+         for_key05 TYPE char10,
+
+       END OF ty_excel.
+
+
+ DATA:
+  gt_excel TYPE TABLE OF ty_excel,
+  gs_excel TYPE ty_excel.
+
+ TYPES: BEGIN OF ty_result,
+         plant       TYPE char10,
+         work_center TYPE char20,
+         status      TYPE char10,
+         message     TYPE char255,
+       END OF ty_result.
+
+DATA: gt_result TYPE STANDARD TABLE OF ty_result,
+      gs_result TYPE ty_result.
+
+ DATA:
+  gt_raw  TYPE solix_tab,
+  gv_xstr TYPE xstring.
+
+
+
+ DATA:
+  gt_bdcdata TYPE STANDARD TABLE OF bdcdata,
+  gs_bdcdata TYPE bdcdata,
+
+  gt_messtab TYPE STANDARD TABLE OF bdcmsgcoll,
+  gs_messtab TYPE bdcmsgcoll.
+
+DATA lv_mode TYPE c LENGTH 1.
+
+
+PARAMETERS p_file TYPE string LOWER CASE OBLIGATORY.
+
+
+SELECTION-SCREEN SKIP 2.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+
+PARAMETERS:
+  p_mode_n RADIOBUTTON GROUP g1 DEFAULT 'X',
+  p_mode_e RADIOBUTTON GROUP g1,
+  p_mode_a RADIOBUTTON GROUP g1.
+
+SELECTION-SCREEN END OF BLOCK b1.
+
+**--------------------------------------------------------
+
+
+AT SELECTION-SCREEN.
+
+  IF p_mode_n = abap_true.
+    lv_mode = 'N'.
+  ELSEIF p_mode_e = abap_true.
+    lv_mode = 'E'.
+  ELSEIF p_mode_a = abap_true.
+    lv_mode = 'A'.
+  ENDIF.
+
+
+
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+
+  DATA:
+    lt_file_table TYPE filetable,
+    lv_rc         TYPE i.
+
+  cl_gui_frontend_services=>file_open_dialog(
+    EXPORTING
+      window_title      = 'Select CR02 Excel File'
+      default_extension = 'xlsx'
+      file_filter       = 'Excel Files (*.xlsx)|*.xlsx|'
+    CHANGING
+      file_table        = lt_file_table
+      rc                = lv_rc ).
+
+  IF lv_rc > 0.
+    READ TABLE lt_file_table INTO DATA(ls_file) INDEX 1.
+    IF sy-subrc = 0.
+      p_file = ls_file-filename.
+    ENDIF.
+  ENDIF.
+
+
+
+
+
+
+
+start-of-selection.
+
+ PERFORM upload_excel.
+
+ PERFORM process_cr02.
+
+ PERFORM display_alv.
+
+*----------------------------------------------------------------------*
+*        Start new screen                                              *
+*----------------------------------------------------------------------*
+FORM BDC_DYNPRO USING PROGRAM DYNPRO.
+  CLEAR GS_BDCDATA.
+  GS_BDCDATA-PROGRAM  = PROGRAM.
+  GS_BDCDATA-DYNPRO   = DYNPRO.
+  GS_BDCDATA-DYNBEGIN = 'X'.
+  APPEND GS_BDCDATA TO GT_BDCDATA.
+ENDFORM.
+
+*----------------------------------------------------------------------*
+*        Insert field                                                  *
+*----------------------------------------------------------------------*
+FORM BDC_FIELD USING FNAM FVAL.
+*  IF FVAL <> NODATA.
+    CLEAR GS_BDCDATA.
+    GS_BDCDATA-FNAM = FNAM.
+    GS_BDCDATA-FVAL = FVAL.
+    APPEND GS_BDCDATA TO GT_BDCDATA.
+*  ENDIF.
+ENDFORM.
+
+
+*&---------------------------------------------------------------------*
+*& Form upload_excel
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM upload_excel .
+
+   DATA:
+    lv_filename   TYPE string,
+    lv_filelength TYPE i,
+    lt_bin_data   TYPE solix_tab,
+    lv_xstring    TYPE xstring,
+    lo_excel      TYPE REF TO cl_fdt_xl_spreadsheet,
+    lt_worksheets TYPE if_fdt_doc_spreadsheet=>t_worksheet_names,
+    lv_worksheet TYPE string,
+    lo_data_ref   TYPE REF TO data.
+
+  FIELD-SYMBOLS:
+    <lt_data> TYPE STANDARD TABLE,
+    <ls_row>  TYPE any,
+    <lv_value> TYPE any.
+
+  lv_filename = p_file.
+
+  cl_gui_frontend_services=>gui_upload(
+    EXPORTING
+      filename   = lv_filename
+      filetype   = 'BIN'
+    IMPORTING
+      filelength = lv_filelength
+    CHANGING
+      data_tab   = lt_bin_data
+    EXCEPTIONS
+      OTHERS     = 1 ).
+
+  IF sy-subrc <> 0.
+    MESSAGE 'Error while uploading Excel file' TYPE 'E'.
+  ENDIF.
+
+  lv_xstring = cl_bcs_convert=>solix_to_xstring(
+                 it_solix = lt_bin_data ).
+
+  TRY.
+
+      lo_excel = NEW cl_fdt_xl_spreadsheet(
+                    document_name = lv_filename
+                    xdocument     = lv_xstring ).
+
+    CATCH cx_fdt_excel_core INTO DATA(lx_excel).
+      MESSAGE lx_excel->get_text( ) TYPE 'E'.
+
+  ENDTRY.
+
+  lo_excel->if_fdt_doc_spreadsheet~get_worksheet_names(
+    IMPORTING
+      worksheet_names = lt_worksheets ).
+
+  READ TABLE lt_worksheets INDEX 1 INTO lv_worksheet.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'No worksheet found in Excel file' TYPE 'E'.
+  ENDIF.
+
+  lo_data_ref = lo_excel->if_fdt_doc_spreadsheet~get_itab_from_worksheet(
+                  worksheet_name = lv_worksheet ).
+
+  ASSIGN lo_data_ref->* TO <lt_data>.
+
+  IF <lt_data> IS NOT ASSIGNED.
+    MESSAGE 'Unable to read Excel worksheet' TYPE 'E'.
+  ENDIF.
+
+  LOOP AT <lt_data> ASSIGNING <ls_row>.
+
+    " Skip Excel header row
+    IF sy-tabix = 1.
+      CONTINUE.
+    ENDIF.
+
+    CLEAR gs_excel.
+
+    " Column 1 - Plant
+    ASSIGN COMPONENT 1 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-plant = <lv_value>.
+    ENDIF.
+
+    " Column 2 - Work Center
+    ASSIGN COMPONENT 2 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-work_center = <lv_value>.
+    ENDIF.
+
+    " Column 3 - Rule 01
+    ASSIGN COMPONENT 3 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-rule01 = <lv_value>.
+    ENDIF.
+
+    " Column 4 - Rule 02
+    ASSIGN COMPONENT 4 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-rule02 = <lv_value>.
+    ENDIF.
+
+    " Column 5 - Rule 03
+    ASSIGN COMPONENT 5 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-rule03 = <lv_value>.
+    ENDIF.
+
+    " Column 6 - Rule 04
+    ASSIGN COMPONENT 6 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-rule04 = <lv_value>.
+    ENDIF.
+
+    " Column 7 - Rule 05
+    ASSIGN COMPONENT 7 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-rule05 = <lv_value>.
+    ENDIF.
+
+    " Column 8 - Activity Type 01
+    ASSIGN COMPONENT 8 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_typ01 = <lv_value>.
+    ENDIF.
+
+    " Column 9 - Activity Type 02
+    ASSIGN COMPONENT 9 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_typ02 = <lv_value>.
+    ENDIF.
+
+    " Column 10 - Activity Type 03
+    ASSIGN COMPONENT 10 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_typ03 = <lv_value>.
+    ENDIF.
+
+    " Column 11 - Activity Type 04
+    ASSIGN COMPONENT 11 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_typ04 = <lv_value>.
+    ENDIF.
+
+    " Column 12 - Activity Type 05
+    ASSIGN COMPONENT 12 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_typ05 = <lv_value>.
+    ENDIF.
+
+    " Column 13 - Activity Unit 01
+    ASSIGN COMPONENT 13 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_unt01 = <lv_value>.
+    ENDIF.
+
+    " Column 14 - Activity Unit 02
+    ASSIGN COMPONENT 14 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_unt02 = <lv_value>.
+    ENDIF.
+
+    " Column 15 - Activity Unit 03
+    ASSIGN COMPONENT 15 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_unt03 = <lv_value>.
+    ENDIF.
+
+    " Column 16 - Activity Unit 04
+    ASSIGN COMPONENT 16 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_unt04 = <lv_value>.
+    ENDIF.
+
+    " Column 17 - Activity Unit 05
+    ASSIGN COMPONENT 17 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-act_unt05 = <lv_value>.
+    ENDIF.
+
+    " Column 18 - Formula Key 01
+    ASSIGN COMPONENT 18 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-for_key01 = <lv_value>.
+    ENDIF.
+
+    " Column 19 - Formula Key 02
+    ASSIGN COMPONENT 19 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-for_key02 = <lv_value>.
+    ENDIF.
+
+    " Column 20 - Formula Key 03
+    ASSIGN COMPONENT 20 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-for_key03 = <lv_value>.
+    ENDIF.
+
+    " Column 21 - Formula Key 04
+    ASSIGN COMPONENT 21 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-for_key04 = <lv_value>.
+    ENDIF.
+
+    " Column 22 - Formula Key 05
+    ASSIGN COMPONENT 22 OF STRUCTURE <ls_row> TO <lv_value>.
+    IF sy-subrc = 0.
+      gs_excel-for_key05 = <lv_value>.
+    ENDIF.
+
+    APPEND gs_excel TO gt_excel.
+
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form process_cr02
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM process_cr02 .
+
+    DATA: lv_vgm01 TYPE char10,
+        lv_vgm02 TYPE char10,
+        lv_vgm03 TYPE char10,
+        lv_vgm04 TYPE char10,
+        lv_vgm05 TYPE char10,
+        lv_lar01 TYPE char10,
+        lv_lar02 TYPE char10,
+        lv_lar03 TYPE char10,
+        lv_lar04 TYPE char10,
+        lv_lar05 TYPE char10,
+        lv_lei01 TYPE char10,
+        lv_lei02 TYPE char10,
+        lv_lei03 TYPE char10,
+        lv_lei04 TYPE char10,
+        lv_lei05 TYPE char10,
+        lv_for01 TYPE char10,
+        lv_for02 TYPE char10,
+        lv_for03 TYPE char10,
+        lv_for04 TYPE char10,
+        lv_for05 TYPE char10,
+        lv_message TYPE string.
+
+  LOOP AT gt_excel INTO gs_excel.
+
+    CLEAR: gt_bdcdata,
+           gt_messtab,
+           gs_bdcdata,
+           gs_messtab,
+           gs_result.
+
+    "------------------------------------------------------------
+    " Move Excel values to local variables
+    "------------------------------------------------------------
+    lv_vgm01 = gs_excel-rule01.
+    lv_vgm02 = gs_excel-rule02.
+    lv_vgm03 = gs_excel-rule03.
+    lv_vgm04 = gs_excel-rule04.
+    lv_vgm05 = gs_excel-rule05.
+
+    lv_lar01 = gs_excel-act_typ01.
+    lv_lar02 = gs_excel-act_typ02.
+    lv_lar03 = gs_excel-act_typ03.
+    lv_lar04 = gs_excel-act_typ04.
+    lv_lar05 = gs_excel-act_typ05.
+
+    lv_lei01 = gs_excel-act_unt01.
+    lv_lei02 = gs_excel-act_unt02.
+    lv_lei03 = gs_excel-act_unt03.
+    lv_lei04 = gs_excel-act_unt04.
+    lv_lei05 = gs_excel-act_unt05.
+
+    lv_for01 = gs_excel-for_key01.
+    lv_for02 = gs_excel-for_key02.
+    lv_for03 = gs_excel-for_key03.
+    lv_for04 = gs_excel-for_key04.
+    lv_for05 = gs_excel-for_key05.
+
+
+*perform open_group.
+
+perform bdc_dynpro      using 'SAPLCRA0' '0100'.
+
+perform bdc_field       using 'BDC_CURSOR'
+                              'RC68A-ARBPL'.
+
+perform bdc_field       using 'BDC_OKCODE'
+                              '/00'.
+
+perform bdc_field       using 'RC68A-WERKS'
+*                              'UP01'.
+                               gs_excel-plant.
+
+perform bdc_field       using 'RC68A-ARBPL'
+*                              'AALT01'.
+                                gs_excel-work_center.
+
+
+
+perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+perform bdc_field       using 'BDC_OKCODE'
+                              '/00'.
+
+perform bdc_field       using 'BDC_CURSOR'
+                              'P1000-STEXT'.
+
+*perform bdc_field       using 'P1000-STEXT'
+*                              'Auto Lathe F/W JL-25F (1)'.
+*
+*perform bdc_field       using 'P3000-VERAN'
+*                              'T0'.
+*
+*perform bdc_field       using 'P3000-STAND'
+*                              'OTHUP01'.
+*
+*perform bdc_field       using 'P3000-PLANV'
+*                              '009'.
+*
+*perform bdc_field       using 'P3000-VGWTS'
+*                              'SAP1'.
+
+
+perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+
+perform bdc_field       using 'BDC_OKCODE'
+                              'VK11'.
+*
+*perform bdc_field       using 'P1000-STEXT'
+*                              'Auto Lathe F/W JL-25F (1)'.
+*
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'RC68A-VGMXX(05)'.
+*
+*perform bdc_field       using 'P3000-VERAN'
+*                              'T0'.
+*
+*perform bdc_field       using 'P3000-STAND'
+*                              'OTHUP01'.
+*
+*perform bdc_field       using 'P3000-PLANV'
+*                              '009'.
+*
+*perform bdc_field       using 'P3000-VGWTS'
+*                              'SAP1'.
+
+PERFORM bdc_field       USING 'RC68A-VGMXX(01)'
+                              lv_vgm01.
+
+PERFORM bdc_field       USING 'RC68A-VGMXX(02)'
+                              lv_vgm02.
+
+PERFORM bdc_field       USING 'RC68A-VGMXX(03)'
+                              lv_vgm03.
+
+perform bdc_field       using 'RC68A-VGMXX(04)'
+*                              '3'.
+                               lv_vgm04.
+
+perform bdc_field       using 'RC68A-VGMXX(05)'
+*                              '3'.
+                               lv_vgm05.
+
+   " CR02 - Activity type / unit / formula values
+
+perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+perform bdc_field       using 'BDC_OKCODE'
+                              '/00'.
+
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'RC68A-FORXX(05)'.
+
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+
+   " LARXX - Activity Types
+perform bdc_field       using 'RC68A-LARXX(01)'
+                              lv_lar01.
+
+perform bdc_field       using 'RC68A-LARXX(02)'
+                              lv_lar02.
+
+perform bdc_field       using 'RC68A-LARXX(03)'
+                              lv_lar03.
+
+perform bdc_field       using 'RC68A-LARXX(04)'
+                              lv_lar04.
+
+perform bdc_field       using 'RC68A-LARXX(05)'
+                              lv_lar05.
+
+   " LEINH - Activity Units
+perform bdc_field       using 'RC68A-LEINH(01)'
+                              lv_lei01.
+perform bdc_field       using 'RC68A-LEINH(02)'
+                              lv_lei02.
+perform bdc_field       using 'RC68A-LEINH(03)'
+                              lv_lei03.
+perform bdc_field       using 'RC68A-LEINH(04)'
+                              lv_lei04.
+perform bdc_field       using 'RC68A-LEINH(05)'
+                              lv_lei05.
+
+ " FORXX - Formula Keys
+perform bdc_field       using 'RC68A-FORXX(01)'
+                              lv_for01.
+
+perform bdc_field       using 'RC68A-FORXX(02)'
+                              lv_for02.
+
+perform bdc_field       using 'RC68A-FORXX(03)'
+                              lv_for03.
+
+perform bdc_field       using 'RC68A-FORXX(04)'
+                              lv_for04.
+
+perform bdc_field       using 'RC68A-FORXX(05)'
+                              lv_for05.
+
+ " CR02 - Save
+
+perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+perform bdc_field       using 'BDC_OKCODE'
+                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+*perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+*perform bdc_field       using 'BDC_OKCODE'
+*                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+*perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+*perform bdc_field       using 'BDC_OKCODE'
+*                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+*perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+*perform bdc_field       using 'BDC_OKCODE'
+*                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+*perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+*perform bdc_field       using 'BDC_OKCODE'
+*                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+*perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+*perform bdc_field       using 'BDC_OKCODE'
+*                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+*perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+*perform bdc_field       using 'BDC_OKCODE'
+*                              '/00'.
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+
+
+perform bdc_dynpro      using 'SAPLCRA0' '4000'.
+
+perform bdc_field       using 'BDC_OKCODE'
+                              '=UPD'.
+
+*perform bdc_field       using 'BDC_CURSOR'
+*                              'P1001-BEGDA'.
+*
+*perform bdc_field       using 'P1001-BEGDA'
+*                              '01.01.1900'.
+*
+*perform bdc_field       using 'P1001-ENDDA'
+*                              '31.12.9999'.
+*
+*perform bdc_field       using 'CRKEYK-KOSTL'
+*                              'UPS000F043'.
+
+*perform bdc_transaction using 'CR02'.
+
+ CALL TRANSACTION 'CR02'
+      USING gt_bdcdata
+      MODE lv_mode
+      UPDATE 'A'
+      MESSAGES INTO gt_messtab.
+
+*perform close_group.
+
+
+ " Read BDC message
+    "------------------------------------------------------------
+    READ TABLE gt_messtab INTO gs_messtab INDEX 1.
+
+    IF sy-subrc = 0.
+
+      MESSAGE ID gs_messtab-msgid
+              TYPE gs_messtab-msgtyp
+              NUMBER gs_messtab-msgnr
+              WITH gs_messtab-msgv1
+                   gs_messtab-msgv2
+                   gs_messtab-msgv3
+                   gs_messtab-msgv4
+              INTO lv_message.
+
+    ELSE.
+
+      lv_message = 'No message returned from CR02'.
+
+    ENDIF.
+
+
+    "------------------------------------------------------------
+    " Result
+    "------------------------------------------------------------
+    gs_result-plant       = gs_excel-plant.
+    gs_result-work_center = gs_excel-work_center.
+    gs_result-message     = lv_message.
+
+    IF gs_messtab-msgtyp = 'S'.
+      gs_result-status = 'SUCCESS'.
+
+    ELSEIF gs_messtab-msgtyp = 'E'
+        OR gs_messtab-msgtyp = 'A'.
+
+      gs_result-status = 'ERROR'.
+
+    ELSEIF gs_messtab-msgtyp = 'W'.
+
+      gs_result-status = 'WARNING'.
+
+    ELSE.
+
+      gs_result-status = gs_messtab-msgtyp.
+
+    ENDIF.
+
+    APPEND gs_result TO gt_result.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form display_alv
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM display_alv .
+
+
+DATA:   lo_alv TYPE REF TO cl_salv_table,
+        lo_columns  TYPE REF TO cl_salv_columns_table,
+        lo_column   TYPE REF TO cl_salv_column.
+
+  TRY.
+
+      cl_salv_table=>factory(
+        IMPORTING
+          r_salv_table = lo_alv
+        CHANGING
+          t_table      = gt_result ).
+
+      lo_alv->get_functions( )->set_all( ).
+
+
+      lo_columns = lo_alv->get_columns( ).
+      lo_alv->get_columns( )->set_optimize( ).
+
+        " Column headings
+      "----------------------------------------------------------
+      lo_column = lo_columns->get_column( 'PLANT' ).
+      lo_column->set_short_text( 'Plant' ).
+      lo_column->set_medium_text( 'Plant' ).
+      lo_column->set_long_text( 'Plant' ).
+
+      lo_column = lo_columns->get_column( 'WORK_CENTER' ).
+      lo_column->set_short_text( 'WorkCtr' ).
+      lo_column->set_medium_text( 'Work Center' ).
+      lo_column->set_long_text( 'Work Center' ).
+
+      lo_column = lo_columns->get_column( 'STATUS' ).
+      lo_column->set_short_text( 'Status' ).
+      lo_column->set_medium_text( 'Status' ).
+      lo_column->set_long_text( 'Processing Status' ).
+
+      lo_column = lo_columns->get_column( 'MESSAGE' ).
+      lo_column->set_short_text( 'Message' ).
+      lo_column->set_medium_text( 'Message' ).
+      lo_column->set_long_text( 'Processing Message' ).
+
+
+      lo_alv->get_display_settings( )->set_striped_pattern( abap_true ).
+
+      lo_alv->get_display_settings( )->set_list_header(
+        'CR02 Work Center Mass Change Result' ).
+
+      lo_alv->display( ).
+
+    CATCH cx_salv_msg INTO DATA(lx_salv).
+
+      MESSAGE lx_salv->get_text( ) TYPE 'E'.
+
+    CATCH cx_salv_not_found INTO DATA(lx_not_found).
+
+      MESSAGE lx_not_found->get_text( ) TYPE 'E'.
+
+  ENDTRY.
+
+
+ENDFORM.
